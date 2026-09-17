@@ -2198,6 +2198,53 @@ func TestSetResultMustNotPanicOnNil(t *testing.T) {
 	dcnl().R().SetResult(nil)
 }
 
+func TestRequestBodySnapshotIndependentOfPooledBuffer(t *testing.T) {
+	client := New()
+	defer client.Close()
+
+	expected := "payload must survive buffer reuse"
+	request := client.R().SetMethod(MethodPost).SetURL("http://resty.test/upload")
+	request.bodyBuf = acquireBuffer()
+	defer releaseBuffer(request.bodyBuf)
+	request.bodyBuf.WriteString(expected)
+	if err := createRawRequest(client, request); err != nil {
+		t.Fatal(err)
+	}
+	defer request.RawRequest.Body.Close()
+	if request.RawRequest.GetBody == nil {
+		t.Fatal("buffered body must have GetBody for redirects and retries")
+	}
+
+	request.bodyBuf.Reset()
+	request.bodyBuf.WriteString(strings.Repeat("X", len(expected)))
+
+	received, err := io.ReadAll(request.RawRequest.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(received) != expected {
+		t.Errorf("HTTP body aliases pooled bytes: got %q, want %q", received, expected)
+	}
+	if request.RawRequest.ContentLength != int64(len(expected)) {
+		t.Errorf("Content-Length=%d, want %d", request.RawRequest.ContentLength, len(expected))
+	}
+
+	for range 2 {
+		replay, err := request.RawRequest.GetBody()
+		if err != nil {
+			t.Fatal(err)
+		}
+		received, err := io.ReadAll(replay)
+		closeErr := replay.Close()
+		if err != nil || closeErr != nil {
+			t.Fatalf("replay read error=%v, close error=%v", err, closeErr)
+		}
+		if string(received) != expected {
+			t.Errorf("GetBody aliases pooled bytes: got %q, want %q", received, expected)
+		}
+	}
+}
+
 func TestRequestClone(t *testing.T) {
 	ts := createGetServer(t)
 	defer ts.Close()
