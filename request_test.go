@@ -2200,7 +2200,7 @@ func TestSetResultMustNotPanicOnNil(t *testing.T) {
 
 func TestRequestBodyPoolLifetime(t *testing.T) {
 	var upload io.ReadCloser
-	client := New().SetTransport(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		upload = request.Body
 		t.Cleanup(func() { _ = upload.Close() })
 		return &http.Response{
@@ -2208,21 +2208,17 @@ func TestRequestBodyPoolLifetime(t *testing.T) {
 			Body:       http.NoBody,
 			Request:    request,
 		}, nil
-	}))
+	})
+	client := dcnl().SetTransport(transport)
 	defer client.Close()
 
-	const payload = "payload must survive"
-	if _, err := client.R().SetBody(payload).Post("http://resty.test/upload"); err != nil {
-		t.Fatal(err)
-	}
+	payload := "payload must survive"
+	_, err := client.R().SetBody(payload).Post("http://resty.test/upload")
+	assertError(t, err)
 
 	body, err := io.ReadAll(upload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(body) != payload {
-		t.Fatalf("body after Execute returned: got %q, want %q", body, payload)
-	}
+	assertError(t, err)
+	assertEqual(t, payload, string(body))
 }
 
 func TestRequestClone(t *testing.T) {
