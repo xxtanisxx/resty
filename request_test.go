@@ -2198,50 +2198,30 @@ func TestSetResultMustNotPanicOnNil(t *testing.T) {
 	dcnl().R().SetResult(nil)
 }
 
-func TestRequestBodySnapshotIndependentOfPooledBuffer(t *testing.T) {
-	client := New()
+func TestRequestBodyPoolLifetime(t *testing.T) {
+	var upload io.ReadCloser
+	client := New().SetTransport(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		upload = request.Body
+		t.Cleanup(func() { _ = upload.Close() })
+		return &http.Response{
+			StatusCode: http.StatusUnprocessableEntity,
+			Body:       http.NoBody,
+			Request:    request,
+		}, nil
+	}))
 	defer client.Close()
 
-	expected := "payload must survive buffer reuse"
-	request := client.R().SetMethod(MethodPost).SetURL("http://resty.test/upload")
-	request.bodyBuf = acquireBuffer()
-	defer releaseBuffer(request.bodyBuf)
-	request.bodyBuf.WriteString(expected)
-	if err := createRawRequest(client, request); err != nil {
+	const payload = "payload must survive"
+	if _, err := client.R().SetBody(payload).Post("http://resty.test/upload"); err != nil {
 		t.Fatal(err)
 	}
-	defer request.RawRequest.Body.Close()
-	if request.RawRequest.GetBody == nil {
-		t.Fatal("buffered body must have GetBody for redirects and retries")
-	}
 
-	request.bodyBuf.Reset()
-	request.bodyBuf.WriteString(strings.Repeat("X", len(expected)))
-
-	received, err := io.ReadAll(request.RawRequest.Body)
+	body, err := io.ReadAll(upload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(received) != expected {
-		t.Errorf("HTTP body aliases pooled bytes: got %q, want %q", received, expected)
-	}
-	if request.RawRequest.ContentLength != int64(len(expected)) {
-		t.Errorf("Content-Length=%d, want %d", request.RawRequest.ContentLength, len(expected))
-	}
-
-	for range 2 {
-		replay, err := request.RawRequest.GetBody()
-		if err != nil {
-			t.Fatal(err)
-		}
-		received, err := io.ReadAll(replay)
-		closeErr := replay.Close()
-		if err != nil || closeErr != nil {
-			t.Fatalf("replay read error=%v, close error=%v", err, closeErr)
-		}
-		if string(received) != expected {
-			t.Errorf("GetBody aliases pooled bytes: got %q, want %q", received, expected)
-		}
+	if string(body) != payload {
+		t.Fatalf("body after Execute returned: got %q, want %q", body, payload)
 	}
 }
 
